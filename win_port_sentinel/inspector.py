@@ -1,4 +1,6 @@
+import socket
 import subprocess
+import time
 from typing import Dict, List, Optional, Tuple, NamedTuple
 
 class PortBinding(NamedTuple):
@@ -90,3 +92,92 @@ def parse_tasklist(output: str) -> Dict[int, str]:
             except ValueError:
                 continue
     return pid_map
+
+def get_active_bindings(netstat_out: Optional[str] = None, tasklist_out: Optional[str] = None) -> List[PortBinding]:
+    if netstat_out is None:
+        try:
+            netstat_out = subprocess.check_output(["netstat", "-ano"], text=True, errors="replace")
+        except (subprocess.SubprocessError, FileNotFoundError):
+            netstat_out = ""
+
+    if tasklist_out is None:
+        try:
+            tasklist_out = subprocess.check_output(["tasklist", "/FO", "CSV", "/NH"], text=True, errors="replace")
+        except (subprocess.SubprocessError, FileNotFoundError):
+            tasklist_out = ""
+
+    raw_records = parse_netstat(netstat_out)
+    pid_map = parse_tasklist(tasklist_out)
+
+    bindings = []
+    for r in raw_records:
+        proc_name = pid_map.get(r["pid"], "Unknown")
+        bindings.append(PortBinding(
+            proto=r["proto"],
+            local_address=r["local_address"],
+            local_port=r["local_port"],
+            foreign_address=r["foreign_address"],
+            foreign_port=r["foreign_port"],
+            state=r["state"],
+            pid=r["pid"],
+            process_name=proc_name
+        ))
+    return bindings
+
+def detect_conflicts(bindings: List[PortBinding]) -> List[Dict]:
+    port_map: Dict[Tuple[str, int], List[PortBinding]] = {}
+    for b in bindings:
+        if b.state in ("LISTENING", "N/A"):
+            key = (b.proto, b.local_port)
+            port_map.setdefault(key, []).append(b)
+
+    conflicts = []
+    for (proto, port), b_list in port_map.items():
+        if port == 0:
+            continue
+        unique_pids = {b.pid for b in b_list}
+        if len(unique_pids) > 1:
+            conflicts.append({
+                "proto": proto,
+                "port": port,
+                "reason": "Multiple PIDs bound to same port",
+                "bindings": [
+                    {"pid": b.pid, "process": b.process_name, "address": b.local_address}
+                    for b in b_list
+                ]
+            })
+        elif len(b_list) > 1:
+            addresses = [b.local_address for b in b_list]
+            if "0.0.0.0:" + str(port) in addresses or "[::]:" + str(port) in addresses:
+                conflicts.append({
+                    "proto": proto,
+                    "port": port,
+                    "reason": "Wildcard port overlap with specific address",
+                    "bindings": [
+                        {"pid": b.pid, "process": b.process_name, "address": b.local_address}
+                        for b in b_list
+                    ]
+                })
+    return conflicts
+
+def test_connectivity(host: str, port: int, timeout: float = 2.0) -> Dict:
+    result = {
+        "host": host,
+        "port": port,
+        "reachable": False,
+        "latency_ms": None,
+        "error": None
+    }
+    start = time.perf_counter()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        elapsed = (time.perf_counter() - start) * 1000
+        result["reachable"] = True
+        result["latency_ms"] = round(elapsed, 2)
+    except Exception as e:
+        result["error"] = str(e)
+    finally:
+        sock.close()
+    return result
