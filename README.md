@@ -36,6 +36,3 @@ python -m win_port_sentinel --list --json
 ```bash
 python -m unittest discover -s tests
 ```
-
----
-_This project was scaffolded with the help of an AI agent._
