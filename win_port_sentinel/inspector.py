@@ -84,8 +84,8 @@ def parse_tasklist(output: str) -> Dict[int, str]:
             continue
         parts = [p.strip('"') for p in line.split('","')]
         if len(parts) >= 2:
-            name = parts[0].strip('"')
-            pid_str = parts[1].strip('"')
+            name = parts[0]
+            pid_str = parts[1]
             try:
                 pid = int(pid_str)
                 pid_map[pid] = name
